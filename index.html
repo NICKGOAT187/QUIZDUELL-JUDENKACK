@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quizduell – Handy-Buzzer</title>
+<style>
+:root{color-scheme:dark;--bg:#100d1c;--panel:#201a32;--line:#45395f;--accent:#d8b4fe;--text:#f8f5ff;--muted:#b9adc9}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#2c1e48,var(--bg) 65%);color:var(--text);font:16px system-ui,sans-serif;min-height:100vh}
+main{max-width:1050px;margin:auto;padding:20px}.hero,.card{background:#201a32eF;border:1px solid var(--line);border-radius:20px;padding:18px;margin-bottom:16px}
+h1{margin:0;font-size:clamp(28px,5vw,44px)}h2{margin:0 0 12px}p{color:var(--muted)}input,button{font:inherit;border-radius:12px;padding:12px;border:1px solid var(--line)}input{background:#120e20;color:white;width:100%;margin:6px 0 12px}
+button{cursor:pointer;background:#35284c;color:white;font-weight:700}button:hover{filter:brightness(1.15)}button:disabled{opacity:.4;cursor:not-allowed}.primary{background:var(--accent);color:#21142f;border:0}.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1}.hidden{display:none!important}.grid{display:grid;grid-template-columns:repeat(6,minmax(90px,1fr));gap:8px}.cat{font-weight:800;background:#35284c;padding:12px 5px;text-align:center;border-radius:10px}.tile{min-height:70px;font-size:22px;color:var(--accent)}.used{opacity:.25;text-decoration:line-through}.players{display:flex;gap:8px;flex-wrap:wrap}.player{border:1px solid var(--line);padding:10px;border-radius:12px;min-width:120px}.player strong{display:block}.question{font-size:clamp(22px,4vw,34px);font-weight:800;margin:16px 0}.answer{font-size:20px;color:#bbf7d0}.buzzer{width:100%;min-height:190px;border-radius:28px;background:#dc2626;color:white;font-size:clamp(34px,8vw,60px);border:5px solid #fca5a5;box-shadow:0 8px 0 #7f1d1d}.buzzer:disabled{background:#4b2632;border-color:#75515b;box-shadow:none}.notice{padding:12px;border-radius:12px;background:#312443;margin:10px 0}.small{font-size:13px;color:var(--muted)}@media(max-width:650px){main{padding:12px}.grid{grid-template-columns:repeat(3,minmax(0,1fr))}.hero,.card{padding:14px}}
+</style>
+</head>
+<body><main>
+<section class="hero"><h1>🏆 QUIZDUELL</h1><p>6 Kategorien · 100–500 Punkte · Handy-Buzzer</p><div id="connection" class="small">Verbinde …</div></section>
+<section id="entry" class="card">
+<h2>Mitspielen</h2><label for="name">Dein Name</label><input id="name" maxlength="24" placeholder="z. B. Alex">
+<div class="row"><button class="primary" id="create">Spiel erstellen (Host)</button><div><label for="code">Spielcode</label><input id="code" maxlength="5" placeholder="ABCDE"></div><button id="join">Beitreten</button></div>
+<p class="small">Der Host und alle Mitspieler müssen dieselbe Web-App-Adresse öffnen. Für Geräte außerhalb desselben WLANs muss sie online gehostet werden.</p><div id="entryError" role="status"></div>
+</section>
+<section id="lobby" class="card hidden"><h2>Lobby · Code: <span id="roomCode"></span></h2><p>Teilt diesen Code mit euren Kollegen.</p><div id="players" class="players"></div><button id="start" class="primary">Spiel starten</button><div id="lobbyMsg" class="small"></div></section>
+<section id="game" class="hidden">
+<section class="card"><div class="row" style="align-items:center"><h2>Spielbrett</h2><div id="role" class="small"></div></div><div id="board" class="grid"></div></section>
+<section class="card"><h2 id="qTitle">Frage</h2><div id="question" class="question">Wähle ein Feld auf dem Spielbrett.</div><div id="answer" class="answer"></div><div id="timer" class="notice hidden"></div>
+<div class="row"><button id="wrong">Antwort falsch → 10-Sekunden-Buzzer</button><button id="reveal">Antwort zeigen</button><button id="next">Frage abschließen</button></div>
+<div id="winner" class="notice hidden"></div>
+<div id="scoring" class="notice"><strong>Punkte vergeben</strong><div id="scoreActions" class="players"></div><div class="small">Host: Nach einer richtigen Antwort bekommt der ausgewählte Spieler den Wert der aktuellen Frage.</div></div>
+</section>
+<section class="card"><h2>📱 Handy-Buzzer</h2><p>Wenn der Host die Buzzer-Runde öffnet, tippt jeder so schnell wie möglich auf seinem eigenen Handy.</p><button id="buzz" class="buzzer" disabled>BUZZERN!</button><div id="buzzMsg" class="notice">Der Buzzer ist geschlossen.</div></section>
+<section class="card"><h2>Spielstand</h2><div id="scores" class="players"></div></section>
+</section>
+</main>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket=io(); let myId=null, roomCode=null, isHost=false, state=null, timerInterval=null;
+const $=id=>document.getElementById(id);
+const categories=["Sport","Flaggen","Allgemeinwissen","Gaming","Zurück in die Schule","Marken"];
+socket.on("connect",()=>{$("connection").textContent="Verbunden · bereit zum Spielen";myId=socket.id});
+socket.on("disconnect",()=>{$("connection").textContent="Verbindung unterbrochen – versuche erneut zu verbinden …"});
+function call(event,data={}){return new Promise(resolve=>socket.emit(event,data,resolve))}
+function showError(msg){$("entryError").textContent=msg||""}
+$("create").onclick=async()=>{const r=await call("createRoom",{name:$("name").value||"Host"});if(r?.ok){roomCode=r.code;isHost=true;enterRoom(r.state)}else showError(r?.error||"Spiel konnte nicht erstellt werden.")};
+$("join").onclick=async()=>{const r=await call("joinRoom",{code:$("code").value,name:$("name").value||"Spieler"});if(r?.ok){roomCode=r.code;isHost=false;enterRoom(r.state)}else showError(r?.error||"Beitreten fehlgeschlagen.")};
+function enterRoom(s){state=s;$("entry").classList.add("hidden");$("lobby").classList.remove("hidden");$("roomCode").textContent=roomCode;render(s)}
+$("start").onclick=async()=>{const r=await call("startGame");$("lobbyMsg").textContent=r?.error||""};
+$("wrong").onclick=async()=>{if(!isHost)return;await call("markWrong")};
+$("reveal").onclick=async()=>{if(isHost)await call("revealAnswer")};
+$("next").onclick=async()=>{if(isHost)await call("nextQuestion")};
+$("buzz").onclick=async()=>{const r=await call("buzz");if(!r?.ok)$("buzzMsg").textContent=r?.error||"Buzzer nicht verfügbar."};
+socket.on("state",s=>{state=s;roomCode=s.code;render(s)});
+function render(s){
+  if(!s)return;
+  $("roomCode").textContent=s.code;
+  $("players").innerHTML=s.players.map(p=>`<div class="player"><strong>${esc(p.name)} ${p.host?"👑":""}</strong>${p.score} Punkte</div>`).join("");
+  $("scores").innerHTML=s.players.slice().sort((a,b)=>b.score-a.score).map(p=>`<div class="player"><strong>${esc(p.name)}</strong>${p.score} Punkte</div>`).join("");
+  $("start").classList.toggle("hidden",!s.players.some(p=>p.id===myId&&p.host));
+  $("lobbyMsg").textContent=s.players.length<2?"Warte auf mindestens einen weiteren Spieler …":"Alle bereit? Der Host kann starten.";
+  if(s.status==="game"){$("game").classList.remove("hidden");$("lobby").classList.add("hidden")}
+  isHost=!!s.players.find(p=>p.id===myId&&p.host);
+  $("role").textContent=isHost?"Du bist Host – du steuerst die Fragen.":"Du spielst mit – nutze deinen Handy-Buzzer.";
+  renderBoard(s);
+  const q=s.current;
+  $("qTitle").textContent=q?`${q.category} · ${q.value} Punkte`:"Wähle eine Frage";
+  $("question").textContent=q?q.question:"Wähle ein Feld auf dem Spielbrett.";
+  $("answer").textContent=q&&s.reveal?`Lösung: ${q.answer}`:"";
+  for(const id of ["wrong","reveal","next"])$(id).disabled=!isHost||!q;
+  $("buzz").disabled=!s.buzzOpen||!!s.buzzWinner;
+  $("buzzMsg").textContent=s.buzzWinner?`🔔 ${s.players.find(p=>p.id===s.buzzWinner)?.name||"Ein Spieler"} hat zuerst gebuzzert!`:s.buzzOpen?"JETZT BUZZERN!": "Der Buzzer ist geschlossen.";
+  $("winner").classList.toggle("hidden",!s.buzzWinner);
+  $("winner").textContent=s.buzzWinner?`Erste Person am Buzzer: ${s.players.find(p=>p.id===s.buzzWinner)?.name||"Spieler"}.`:"";
+  $("scoring").classList.toggle("hidden",!isHost||!q);
+  $("scoreActions").innerHTML="";
+  if(isHost&&q){
+    s.players.forEach(p=>{
+      const btn=document.createElement("button");
+      btn.textContent=`+${q.value} · ${p.name}`;
+      btn.onclick=async()=>{
+        const r=await call("awardPoints",{playerId:p.id,delta:q.value});
+        if(r&&r.ok) alert(`${p.name} erhält ${q.value} Punkte!`);
+        else alert(r?.error||"Punkte konnten nicht vergeben werden.");
+      };
+      $("scoreActions").appendChild(btn);
+      const minus=document.createElement("button");
+      minus.textContent=`−${q.value} · ${p.name}`;
+      minus.onclick=async()=>{
+        const r=await call("awardPoints",{playerId:p.id,delta:-q.value});
+        if(r&&r.ok) alert(`${p.name} verliert ${q.value} Punkte.`);
+        else alert(r?.error||"Punkte konnten nicht angepasst werden.");
+      };
+      $("scoreActions").appendChild(minus);
+    });
+  }
+  clearInterval(timerInterval);
+  if(s.buzzOpen&&s.buzzEndsAt){const tick=()=>{const left=Math.max(0,s.buzzEndsAt-Date.now());$("timer").classList.remove("hidden");$("timer").textContent=`⏱️ Noch ${(left/1000).toFixed(1)} Sekunden`;if(left<=0)clearInterval(timerInterval)};tick();timerInterval=setInterval(tick,100)}
+  else $("timer").classList.add("hidden");
+}
+function renderBoard(s){
+ const used=new Set(s.used||[]);
+ $("board").innerHTML=categories.map(c=>`<div class="cat">${esc(c)}</div>`).join("");
+ for(let i=0;i<5;i++)for(const c of categories){
+   const value=(i+1)*100, key=`${c}|${value}`, isUsed=used.has(key);
+   const btn=document.createElement("button");btn.className="tile"+(isUsed?" used":"");btn.textContent=isUsed?"✓":value;
+   btn.disabled=!isHost||isUsed||!!s.current||s.status!=="game";
+   btn.title=`${c}: ${value} Punkte`;
+   btn.onclick=async()=>{const r=await call("chooseQuestion",{category:c,value});if(r&&!r.ok)alert(r.error)};
+   $("board").appendChild(btn);
+ }
+}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+</script>
+</body></html>
